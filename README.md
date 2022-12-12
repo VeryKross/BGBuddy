@@ -7,6 +7,10 @@ V1 - BG Buddy simply monitors the Nightscout API and displays 5 key pieces of in
 
 ![image](https://user-images.githubusercontent.com/11561147/206937646-eebd5c93-2601-4517-baed-061cf33e25ca.png)
 
+![BG_Buddy1_Breadboard](https://user-images.githubusercontent.com/11561147/206938651-829eda16-3d4c-4a48-916e-f660fc8be3c5.jpg)
+
 V2 - Version 2 of BG Buddy is already in the works and will add visual and audible alarm options that will be triggered by the settings configured in Nightscout itself. The user will have new options to control whether they want just the warning LED, the buzzer, or both (if you don't want either, stick with V1). More details on the build will follow soon.
 
 V3 - Version 3 again builds on its predecessor (v2) and adds the ability to manually trigger speech. Yes, BG Buddy will be able to talk, calling out the values for those 5 tracked values and making it accessible to those with visual impairments. This is in the early stages of development, and I’m excited to include this functionality.
+
+Lastly, full build instructions, BOM, and probably a video will be coming along. Source and compiled bin options will be available so if you really don't want to get into compiling stuff and just want a working BG Buddy, that will be an option too (you'll still need to hook the components together, but its pretty easy, I promise).
