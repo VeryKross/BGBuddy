@@ -23,6 +23,7 @@
 #include <ESP8266WiFiMulti.h>
 #include <ESP8266HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <ESP8266mDNS.h>
 
 #include <Fonts/FreeSans9pt7b.h>
 
@@ -32,6 +33,7 @@
 #define SCREEN_WIDTH 128  // OLED display width, in pixels
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
 #define OLED_RESET -1     // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SYSLED D0         // The pin # for the onboard LED
 
 IPAddress local_IP(10,10,10,10);
 IPAddress gateway(10,10,10,1);
@@ -41,8 +43,9 @@ ESP8266WebServer server(80);
 
 WiFiEventHandler stationConnectedHandler;
 
+WiFiClientSecure client;
+
 int nsConnectCount = 0;
-int nsWaitCount = 0;
 int nsRetryDelay = 15;            // Initial retry delay in seconds
 int nsRetryMax = 9;               // Max # of retries before asking for help
 int nsRetryNoticeThreshold = 20;  // The point at which the display will indicate a retry delay
@@ -52,6 +55,11 @@ bool nsConnectFailed = false;
 bool nsFirstUpdate = true;
 bool wifiInitialized = false;
 bool connectionValidated = false;
+bool unknownState = false;
+
+unsigned long curMiliCount = 0;
+unsigned long prevMiliCount = 0;
+int nsApiInterval = 60000;        // Call the NS API every minute
 
 struct settings {
   int initialized;
@@ -83,9 +91,9 @@ String arrowDir="";     // Arrow trend direction
 void setup() {
   Serial.begin(115200);
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-  display.clearDisplay();
 
   // Let the user know we're awake
+  display.clearDisplay();
   display.setCursor(0,16);
   display.setTextSize(2);
   display.setTextColor(WHITE);
@@ -96,6 +104,8 @@ void setup() {
 
   // Setup the pin to control the Busy LED
   pinMode(busyLedPin, OUTPUT);
+  pinMode(SYSLED, OUTPUT);
+  digitalWrite(SYSLED, HIGH);
 
   EEPROM.begin(sizeof(struct settings) );
   EEPROM.get( 0, user_settings );
@@ -113,7 +123,7 @@ void setup() {
   
   Serial.print("Connecting to WiFi..");
   WiFi.mode(WIFI_STA);
-  WiFi.hostname("BG_Buddy");
+  WiFi.hostname("BGBuddy");
   WiFi.begin(user_settings.ssid, user_settings.password);
 
   byte tries = 0;
@@ -146,33 +156,182 @@ void setup() {
     display.display();
   } else {
     Serial.print("Connected to WiFi: ");
-    Serial.println(user_settings.ssid);
-
     printWiFiStatus();
+
+    // Since we're connected to WiFi, let's display our IP address
+    // In case the user wants to connect to our configuration portal
+    display.clearDisplay();
+    display.setCursor(0,16);
+    display.setTextSize(2);
+    display.setTextColor(WHITE);
+    display.println("BG Buddy");
+    display.setCursor(0,32);
+    display.println("Init...");
+    display.setTextSize(1);
+    display.println();
+    display.println(WiFi.localIP());
+    display.display();
+
+    // Setup mDNS so we can serve our web page at http://bgbuddy.local/
+    // which is easier to remember than our IP address
+    MDNS.begin("BGBuddy");
   }
 
   // Start the internal web server for the configuration page.
   server.on("/",  handlePortal);
   server.begin();
+
+  client.setInsecure();
+}
+
+void loop() 
+{
+  MDNS.update();
+
+  server.handleClient();
+
+  // If user had connected to the BG Buddy access point, 
+  // remind them of the IP address to browse to for setup.
+  if (askReset == true) {
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    display.println("Once WiFi Connected");
+    display.println("Browse to:");
+    display.println("10.10.10.10");
+    display.display();
+    askReset = false;
+  }  
+
+  // Make the API call immediately after startup or roughly every minute
+  curMiliCount = millis();
+  if(nsFirstUpdate || curMiliCount - prevMiliCount >= nsApiInterval){
+    prevMiliCount = curMiliCount;
+    checkNSapi();
+  }
+}
+
+// Turns on/off LEDs to indicate activity/busy status
+void showBusy(bool ledOn){
+  if(ledOn){
+    digitalWrite(busyLedPin, HIGH); // Busy LED On
+    digitalWrite(SYSLED, LOW);
+  } else {
+    digitalWrite(busyLedPin, LOW); // Busy LED Off
+    digitalWrite(SYSLED, HIGH);
+  }
+}
+
+// Calls the Nightscout API to retrieve updated information
+void checkNSapi(){
+  if(wifiInitialized) {
+    Serial.println("--- Calling Nightscout API ...");
+    nsFirstUpdate = false;
+
+    // If we've previously connected, the settings are likely correct so adjust our patience
+    if(connectionValidated) {
+      nsRetryDelay = 30;
+      nsRetryMax = 50;
+    }
+  
+    showBusy(true);
+
+    if (!client.connect(serverName, 443) && !nsConnectFailed) {
+      Serial.printf("Attempt %i of %i failed.\n", nsConnectCount + 1, nsRetryMax);
+      showBusy(false);
+      
+      if(connectionValidated && (nsConnectCount >= nsRetryNoticeThreshold && nsConnectCount < nsRetryMax)){
+        display.clearDisplay();
+        display.setCursor(0,16);
+        display.setTextSize(2);
+        display.setTextColor(WHITE);
+        display.println("API Update");
+        display.println("Failing...");
+        display.printf("Retry %i\n", nsConnectCount);
+        display.display();
+      }
+
+      if(nsConnectCount >= nsRetryMax) {
+        nsConnectCount = 0;      
+        nsConnectFailed = true;
+
+        display.clearDisplay();
+        display.setCursor(0,0);
+        display.setTextSize(1);
+        display.setTextColor(WHITE);
+        display.println("NS Connect Fail");
+        display.println("Browse to:");
+        display.println(WiFi.localIP());
+        display.println("to check settings.");
+        display.display();
+      } 
+
+      Serial.printf("Retry in %i seconds...\n", nsRetryDelay);
+      nsConnectCount++;
+      delay(nsRetryDelay * 1000);
+      return;
+    }
+  
+    // Call the Nightscout API
+    client.print(String("GET ") + apiName + apiToken + " HTTP/1.1\r\n" +
+              "Host: " + serverName + "\r\n" +
+              "User-Agent: BuildFailureDetectorESP8266\r\n" +
+              "Connection: close\r\n\r\n");
+
+    // Read (and toss) the response header
+    while (client.connected()) {
+      String line = client.readStringUntil('\n');
+      if (line == "\r") {
+        break;
+      }
+    }
+
+    // Read the JSON response data
+    String rawJSON = client.readStringUntil('\n');
+
+    DynamicJsonDocument doc(1536);
+    DeserializationError error = deserializeJson(doc, rawJSON);
+
+    if (error) {
+      Serial.print(F("Failed to deserialize JSON data: "));
+      Serial.println(error.f_str());
+      return;
+    } else {
+      parseReadings(doc);
+    }
+
+    showBusy(false);
+    displayInfo();
+
+    // We know we can successfully connect and process the data - huzzah!
+    connectionValidated = true;
+    nsConnectCount = 0;
+    
+    Serial.println("Update Complete");
+    Serial.println("------------------------------");
+  }  
+  
 }
 
 // Mostly used as a debugging aid for WiFi connectivity.
 // Outputs connected SSID and IP address to the serial monitor.
 void printWiFiStatus() {
-  // print the SSID of the network you're attached to:
+  // Print the SSID of the network we connected to
   Serial.print("SSID: ");
   Serial.println(WiFi.SSID());
 
-  // print your WiFi shield's IP address:
+  // Print the WiFi IP address
   IPAddress ip = WiFi.localIP();
   Serial.print("IP Address: ");
   Serial.println(ip);
 
-  // print the received signal strength:
+  // Print the received signal strength
   long rssi = WiFi.RSSI();
   Serial.print("signal strength (RSSI):");
   Serial.print(rssi);
   Serial.println(" dBm");
+  Serial.println();
 }
 
 void onStationConnected(const WiFiEventSoftAPModeStationConnected& evt) {
@@ -194,126 +353,13 @@ String macToString(const unsigned char* mac) {
   return String(buf);
 }
 
-void loop() 
-{
-  server.handleClient();
-
-  // If user had connected to the BG Buddy access point, 
-  // remind them of the IP address to browse to for setup.
-  if (askReset == true) {
-    display.clearDisplay();
-    display.setCursor(0,0);
-    display.setTextSize(1);
-    display.setTextColor(WHITE);
-    display.println("Once WiFi Connected");
-    display.println("Browse to:");
-    display.println("10.10.10.10");
-    display.display();
-    askReset = false;
-  }  
-
-  WiFiClientSecure client;
-  client.setInsecure();
-
-  // Make the API call immediately after restart or roughly every minute
-  if(wifiInitialized && (nsFirstUpdate || nsWaitCount > 50)) {
-    Serial.println("--- Calling Nightscout API ...");
-    nsFirstUpdate = false;
-    nsWaitCount = 0;
-
-    // If we've previously connected, the settings are likely correct so adjust our patience
-    if(connectionValidated) {
-      nsRetryDelay = 30;
-      nsRetryMax = 50;
-    }
-  
-    digitalWrite(busyLedPin, HIGH); // Busy LED On
-
-    if (!client.connect(serverName, 443) && !nsConnectFailed) {
-      Serial.printf("Attempt %i of %i failed.\n", nsConnectCount + 1, nsRetryMax);
-      digitalWrite(busyLedPin, LOW); // Busy LED Off
-
-      if(connectionValidated && nsConnectCount >= nsRetryNoticeThreshold){
-        display.clearDisplay();
-        display.setCursor(0,16);
-        display.setTextSize(2);
-        display.setTextColor(WHITE);
-        display.println("API Update");
-        display.println("Failing...");
-        display.printf("Retry %i\n", nsConnectCount);
-        display.display();
-      }
-
-      if(nsConnectCount > nsRetryMax) {
-        nsConnectCount = 0;      
-        nsConnectFailed = true;
-
-        display.clearDisplay();
-        display.setCursor(0,0);
-        display.setTextSize(1);
-        display.setTextColor(WHITE);
-        display.println("NS Connect Fail");
-        display.println("Browse to:");
-        display.println(WiFi.localIP());
-        display.println("to check settings.");
-        display.display();
-
-        nsWaitCount = -10000;
-      } 
-
-      Serial.printf("Retry in %i seconds...\n", nsRetryDelay);
-      nsConnectCount++;
-      delay(nsRetryDelay * 1000);
-      return;
-    }
-  
-    client.print(String("GET ") + apiName + apiToken + " HTTP/1.1\r\n" +
-              "Host: " + serverName + "\r\n" +
-              "User-Agent: BuildFailureDetectorESP8266\r\n" +
-              "Connection: close\r\n\r\n");
-
-    while (client.connected()) {
-      String line = client.readStringUntil('\n');
-      if (line == "\r") {
-        break;
-      }
-    }
-
-    String rawJSON = client.readStringUntil('\n');
-    DynamicJsonDocument doc(1536);
-    DeserializationError error = deserializeJson(doc, rawJSON);
-
-    if (error) {
-      Serial.print(F("Failed to deserialize JSON data: "));
-      Serial.println(error.f_str());
-      return;
-    } else {
-      parseReadings(doc);
-    }
-
-    digitalWrite(busyLedPin, LOW); // Busy LED Off
-
-    displayInfo();
-
-    // We know we can successfully connect and process the data - huzzah!
-    connectionValidated = true;
-    
-    Serial.println("Update Complete");
-    Serial.println("------------------------------");
-  }  
-  
-  if(!nsConnectFailed){
-    delay(1000); // 1 second wait
-    nsWaitCount++;
-  }
-}
-
 // This method is called when a user connects to BG Buddy via a web browser
 // and provides an easy web-based configuration interface.
 void handlePortal() {
   IPAddress userIP = server.client().remoteIP();
   Serial.print("Remote user connected to portal: ");
   Serial.println(userIP);
+  String pg;
   
   if (server.method() == HTTP_POST) {
 
@@ -340,7 +386,14 @@ void handlePortal() {
     // Save confirmation page    
     Serial.println("Configuration saved to internal memory. Please reset the device.");
     wifiInitialized = false;
-    server.send(200, "text/html", "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>BG Buddy Setup</title><style>*,::after,::before{box-sizing:border-box;}body{margin:0;font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','Liberation Sans';font-size:1rem;font-weight:400;line-height:1.5;color:#212529;background-color:#f5f5f5;}.form-control{display:block;width:100%;height:calc(1.5em + .75rem + 2px);border:1px solid #ced4da;}button{border:1px solid transparent;color:#fff;background-color:#007bff;border-color:#007bff;padding:.5rem 1rem;font-size:1.25rem;line-height:1.5;border-radius:.3rem;width:100%}.form-signin{width:100%;max-width:400px;padding:15px;margin:auto;}h1,p{text-align: center}</style> </head> <body><main class='form-signin'> <h1>BG Buddy Setup</h1> <br/> <p>Your settings have been saved successfully!<br />Please restart the device.</p></main></body></html>" );
+
+    pg = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">";
+    pg += "<title>BG Buddy Setup</title><style>*,::after,::before{box-sizing:border-box;}body{margin:0;font-family:\"Segoe UI\",Roboto,\"Helvetica Neue\",Arial,\"Noto Sans\",\"Liberation Sans\";";
+    pg += "font-size:1rem;font-weight:400;line-height:1.5;color:#212529;background-color:#f5f5f5;}.form-control{display:block;width:100%; height:calc(1.5em + .75rem + 2px);border:1px solid #ced4da;";
+    pg += "}button{border:1px solid transparent;color:#fff;background-color:#007bff;border-color:#007bff;padding:.5rem 1rem;font-size:1.25rem;line-height:1.5;border-radius:.3rem;width:100%}";
+    pg += ".form-signin{width:100%;max-width:400px;padding:15px;margin:auto;}h1,p{text-align: center}</style> </head> <body><main class=\"form-signin\"> <h1>BG Buddy Setup</h1> <br/>";
+    pg += "<p>Your settings have been saved successfully!<br/>Please restart the device.</p></main></body></html>";
+
   } else {
 
     String ssid = user_settings.ssid;
@@ -358,8 +411,20 @@ void handlePortal() {
 
     // Setup/Configuration page
     Serial.println("Configuration web page requested.");
-    server.send(200, "text/html", "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>BG Buddy Setup</title> </head><body><main><form action='/' method='post'><h1>BG Buddy Setup</h1><p>The following settings allow you to connect BG Buddy to your local WiFi access point and allow BG Buddy to connect to your Nightscout site. Note that if you have setup an API access token on your website, you'll need to provide it here - otherwise you can leave it blank.</p><p>Also note that when providing the URL value, don't enter the \"HTTPS://\" prefix, just the text that comes after that (e.g. NOT \"https://mybgsite.myserver.com\" but THIS \"mybgsite.myserver.com\").</p><h2>WiFi Settings</h2><div><div><div><div><label>SSID: </label></div><div><input name='ssid' type='text' value='" + ssid + "'/></div></div><div><div><label>Password: </label></div><div><input name='password' type='password' value='" + password + "'/></div></div></div></div><h2>Nightscout Website Settings</h2><div><div><div><div><label>Nightscout URL: </label></div><div><input name='nsurl' type='text' size='50' value='" + nsurl + "'/></div></div><div><div><label>Nightscout API Token (optional): </label></div><div><input name='nstoken' type='text' value='" + nstoken + "'/></div></div></div></div><br /><button type='submit'>Save</button></form>Always restart BG Buddy after saving for the changes to take effect.</main></body></html>");
+
+    pg = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>BG Buddy Setup</title>";
+    pg += "</head><body><main><form action=\"/\" method=\"post\"><h1>BG Buddy Setup</h1><p>The following settings allow you to connect BG Buddy to your local WiFi access point and allow BG Buddy ";
+    pg += "to connect to your Nightscout site. Note that if you have setup an API access token on your website, you'll need to provide it here - otherwise you can leave it blank.</p>";
+    pg += "<p>Also note that when providing the URL value, don't enter the \"HTTPS://\" prefix, just the text that comes after that (e.g. NOT \"https://mybgsite.myserver.com\" but THIS \"mybgsite.myserver.com\").</p>";
+    pg += "<h2>WiFi Settings</h2><div><div><div><div><label>SSID: </label></div><div><input name=\"ssid\" type=\"text\" value=\"" + ssid + "\"/></div></div>";
+    pg += "<div><div><label>Password: </label></div><div><input name=\"password\" type=\"password\" value=\"" + password + "\"/></div></div></div></div>";
+    pg += "<h2>Nightscout Website Settings</h2><div><div><div><div><label>Nightscout URL: </label></div><div><input name=\"nsurl\" type=\"text\" size=\"50\" value=\"" + nsurl + "\"/></div></div>";
+    pg += "<div><div><label>Nightscout API Token (optional): </label></div><div><input name=\"nstoken\" type=\"text\" value=\"" + nstoken + "\"/></div></div></div></div>";
+    pg += "<br /><button type=\"submit\">Save</button></form>Always restart BG Buddy after saving for the changes to take effect.</main></body></html>";
+
   }
+
+  server.send(200, "text/html", pg);
 }
 
 // Refresh the display with current info, including drawing the trend arrow
@@ -412,26 +477,40 @@ void displayInfo(){
   dispCanvas.setCursor(0,12);
   dispCanvas.setTextSize(1);
   dispCanvas.setTextColor(WHITE);
-  dispCanvas.print(batteryLevel);//(pump_uploader_display);
-  dispCanvas.print("  ");
-  dispCanvas.print(lastUpdate);
 
+  if(unknownState) {
+    dispCanvas.print("Check LOOP");
+  } else{
+    dispCanvas.print(batteryLevel);
+    dispCanvas.print("  ");
+    dispCanvas.print(lastUpdate);
+  }
+  
   dispCanvas.setCursor(0,42);
   dispCanvas.setTextSize(2);
   dispCanvas.setTextColor(WHITE);
   dispCanvas.print(bgLevel);
 
-  if (directarr != "") {
-    drawArrow(78, 42+arrowOffset, 10, arrowAngle, 24, 24, WHITE);
-    if(doubleArrow){
-      drawArrow(105, 42+arrowOffset, 10, arrowAngle, 24, 24, WHITE);
-    }
-  }
+  if(unknownState) {
+    dispCanvas.print("   ?");
 
-  dispCanvas.setCursor(0,62);
-  dispCanvas.setTextSize(1);
-  dispCanvas.print("Res: ");
-  dispCanvas.print(insLevel);
+    dispCanvas.setCursor(0,62);
+    dispCanvas.setTextSize(1);
+    dispCanvas.print("Status unknown");
+    dispCanvas.print(insLevel);
+  } else {
+    if (directarr != "") {
+      drawArrow(78, 42+arrowOffset, 10, arrowAngle, 24, 24, WHITE);
+      if(doubleArrow){
+        drawArrow(105, 42+arrowOffset, 10, arrowAngle, 24, 24, WHITE);
+      }
+    }
+
+    dispCanvas.setCursor(0,62);
+    dispCanvas.setTextSize(1);
+    dispCanvas.print("Res: ");
+    dispCanvas.print(insLevel);
+  }
 
   display.drawBitmap(0,0,dispCanvas.getBuffer(), SCREEN_WIDTH, SCREEN_HEIGHT, WHITE, BLACK);
   display.display();
@@ -489,6 +568,10 @@ void parseReadings(DynamicJsonDocument doc){
   bgLevel = bgnow_sgvs_0_mgdl;
   insLevel = pump_data_reservoir_display;
   arrowDir = bgnow_sgvs_0_direction;
+
+  // Set the unknownState based on whether or not we're getting the battery level value
+  // If LOOP stops sending to Nightscout this will be blank (e.g. sensor change period)
+  unknownState = batteryLevel == "";
 }
 
 // Used to draw the arrows indicating the BG trend
