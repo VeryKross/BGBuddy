@@ -7,7 +7,7 @@ V1 - BG Buddy simply monitors the Nightscout API and displays 5 key pieces of in
 
 ![image](https://user-images.githubusercontent.com/11561147/206937646-eebd5c93-2601-4517-baed-061cf33e25ca.png)
 
-![BGBuddy_v1-Breadboard](https://user-images.githubusercontent.com/11561147/208538634-053749fc-3487-4052-a12d-179475db3f60.jpg)
+![BG_Buddy1_Breadboard1](https://user-images.githubusercontent.com/11561147/208538830-5ceb35ea-0ee1-4cdb-b980-db8bcfabd936.jpg)
 
 V2 - Version 2 of BG Buddy is already in the works and will add visual and audible alarm options that will be triggered by the settings configured in Nightscout itself. The user will have new options to control whether they want just the warning LED, the buzzer, or both (if you don't want either, stick with V1). More details on the build will follow soon.
 
