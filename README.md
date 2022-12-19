@@ -1,7 +1,7 @@
 # BGBuddy
 BG Buddy is a blood glucose monitoring project that provides a local IoT-based display for Nightscout users.
 
-BG Buddy leverages the ESP8266 SOC, an inexpensive OLED display, and a few other optional components. Since BG Buddy depends on a user's Nightscout website for data, this has to be setup and operational before anything wonderful can come from BG Buddy.
+BG Buddy leverages the ESP8266 SOC, an inexpensive OLED display, and a few other optional components. Since BG Buddy depends on a user's Nightscout website for data, this has to be setup and operational before anything wonderful can come from BG Buddy. If you're not familiar with Nightscout, please refer to this link for all the details and come back here once you're setup: http://www.nightscout.info/
 
 V1 - BG Buddy simply monitors the Nightscout API and displays 5 key pieces of information which, for me, would cause me to check on a loved one with diabetes if any of the values were out of range. That's really what's at the core of BG Buddy - keep those key values top-of-mind by creating a simple inexpensive device that could sit on a desk or shelf [or both] so these critical values are always available, at a glance.
 
