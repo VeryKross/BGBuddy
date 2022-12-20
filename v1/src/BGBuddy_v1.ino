@@ -33,7 +33,6 @@
 #define SCREEN_WIDTH 128  // OLED display width, in pixels
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
 #define OLED_RESET -1     // Reset pin # (or -1 if sharing Arduino reset pin)
-#define SYSLED D0         // The pin # for the onboard LED
 
 IPAddress local_IP(10,10,10,10);
 IPAddress gateway(10,10,10,1);
@@ -104,8 +103,8 @@ void setup() {
 
   // Setup the pin to control the Busy LED
   pinMode(busyLedPin, OUTPUT);
-  pinMode(SYSLED, OUTPUT);
-  digitalWrite(SYSLED, HIGH);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
 
   EEPROM.begin(sizeof(struct settings) );
   EEPROM.get( 0, user_settings );
@@ -121,7 +120,7 @@ void setup() {
     wifiInitialized = true;
   }
   
-  Serial.print("Connecting to WiFi..");
+  Serial.println("Connecting to WiFi..");
   WiFi.mode(WIFI_STA);
   WiFi.hostname("BGBuddy");
   WiFi.begin(user_settings.ssid, user_settings.password);
@@ -155,7 +154,7 @@ void setup() {
     display.println("Pwd: 12345678");
     display.display();
   } else {
-    Serial.print("Connected to WiFi: ");
+    Serial.println("Connected to WiFi: ");
     printWiFiStatus();
 
     // Since we're connected to WiFi, let's display our IP address
@@ -215,11 +214,11 @@ void loop()
 // Turns on/off LEDs to indicate activity/busy status
 void showBusy(bool ledOn){
   if(ledOn){
+    digitalWrite(LED_BUILTIN, LOW);
     digitalWrite(busyLedPin, HIGH); // Busy LED On
-    digitalWrite(SYSLED, LOW);
   } else {
+    digitalWrite(LED_BUILTIN, HIGH);
     digitalWrite(busyLedPin, LOW); // Busy LED Off
-    digitalWrite(SYSLED, HIGH);
   }
 }
 
