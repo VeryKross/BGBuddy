@@ -13,6 +13,6 @@ V2 - Version 2 of BG Buddy is already in the works and will add visual and audib
 
 V3 - Version 3 again builds on its predecessor (v2) and adds the ability to manually trigger speech. Yes, BG Buddy will be able to talk, calling out the values for those 5 tracked values and making it accessible to those with visual impairments. This is in the early stages of development, and I’m excited to include this functionality.
 
-Lastly, full build instructions, BOM, and probably a video will be coming along. Source and compiled bin options will be available so if you really don't want to get into compiling stuff and just want a working BG Buddy, that will be an option too (you'll still need to hook the components together, but its pretty easy, I promise).
+Lastly, full build and setup instructions, bill of materials and other info can be found in a PDF document in the version (v1) folder. This covers both source and compiled bin options so if you really don't want to get into compiling stuff and just want a working BG Buddy, that's an option too!
 
 BG Buddy is a DIY project intended for educational and personal use only. It is not intended for commercial use or to be relied upon for any professional or medical purposes. The creators and contributors of BG Buddy are not responsible for any damages or injuries that may result from the use of this project. By using the BG Buddy software and/or hardware plans, you acknowledge that you understand and assume all risks associated with its use. Please use caution and common sense when working on any DIY project.
