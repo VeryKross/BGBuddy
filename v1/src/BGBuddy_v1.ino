@@ -23,7 +23,10 @@
 #include <ESP8266WiFiMulti.h>
 #include <ESP8266HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <WiFiUdp.h>
+#include <NTPClient.h>
 #include <ESP8266mDNS.h>
+#include <Time.h>
 
 #include <Fonts/FreeSans9pt7b.h>
 
@@ -33,6 +36,8 @@
 #define SCREEN_WIDTH 128  // OLED display width, in pixels
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
 #define OLED_RESET -1     // Reset pin # (or -1 if sharing Arduino reset pin)
+
+#define BG_VER 1.1        // Current version of BG Buddy, displayed at startup
 
 IPAddress local_IP(10,10,10,10);
 IPAddress gateway(10,10,10,1);
@@ -54,7 +59,6 @@ bool nsConnectFailed = false;
 bool nsFirstUpdate = true;
 bool wifiInitialized = false;
 bool connectionValidated = false;
-bool unknownState = false;
 
 unsigned long curMiliCount = 0;
 unsigned long prevMiliCount = 0;
@@ -74,6 +78,10 @@ GFXcanvas1 dispCanvas(SCREEN_WIDTH, SCREEN_HEIGHT);
 const int errorLedPin = 14; // this corresponds to pin D5 on the ESP8266 (future use)
 const int busyLedPin = 12;  // this corresponds to pin D6
 
+// Define NTP Client so we can retrieve current UTC time
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org");
+
 // This are the specific API value being retrieved; changing this will require
 // changes to the parseReadings() method so best not to change it.
 char apiName[] = "/api/v2/properties/bgnow,pump.data,pump.uploader";
@@ -83,7 +91,7 @@ String apiToken = "";
 // The following 5 values represent what is presented on the display
 String batteryLevel=""; // Battery level of the phone running Loop
 String lastUpdate="";   // How long since last Nightscout update
-int bgLevel=0;          // Current Blood Glucose level
+String bgLevel="";      // Current Blood Glucose level
 String insLevel="";     // Insuline level reported by pump
 String arrowDir="";     // Arrow trend direction
 
@@ -99,6 +107,10 @@ void setup() {
   display.println("BG Buddy");
   display.setCursor(0,32);
   display.println("Init...");
+  display.setTextSize(1);
+  display.println();
+  display.print("Version ");
+  display.println(BG_VER);
   display.display();
 
   // Setup the pin to control the Busy LED
@@ -120,7 +132,12 @@ void setup() {
     wifiInitialized = true;
   }
   
-  Serial.println("Connecting to WiFi..");
+  Serial.println("BG Buddy");
+  Serial.print("Version ");
+  Serial.println(BG_VER);
+  Serial.println("---------------------");
+
+  Serial.println("Connecting to WiFi...");
   WiFi.mode(WIFI_STA);
   WiFi.hostname("BGBuddy");
   WiFi.begin(user_settings.ssid, user_settings.password);
@@ -477,42 +494,56 @@ void displayInfo(){
   dispCanvas.setTextSize(1);
   dispCanvas.setTextColor(WHITE);
 
-  if(unknownState) {
-    dispCanvas.print("Check LOOP");
-  } else{
+  if(batteryLevel != "") {
     dispCanvas.print(batteryLevel);
     dispCanvas.print("  ");
-    dispCanvas.print(lastUpdate);
   }
+  dispCanvas.print(lastUpdate);
   
   dispCanvas.setCursor(0,42);
   dispCanvas.setTextSize(2);
   dispCanvas.setTextColor(WHITE);
   dispCanvas.print(bgLevel);
 
-  if(unknownState) {
-    dispCanvas.print("   ?");
-
-    dispCanvas.setCursor(0,62);
-    dispCanvas.setTextSize(1);
-    dispCanvas.print("Status unknown");
-    dispCanvas.print(insLevel);
-  } else {
-    if (directarr != "") {
-      drawArrow(78, 42+arrowOffset, 10, arrowAngle, 24, 24, WHITE);
-      if(doubleArrow){
-        drawArrow(105, 42+arrowOffset, 10, arrowAngle, 24, 24, WHITE);
-      }
+  if (directarr != "") {
+    drawArrow(78, 42+arrowOffset, 10, arrowAngle, 24, 24, WHITE);
+    if(doubleArrow){
+      drawArrow(105, 42+arrowOffset, 10, arrowAngle, 24, 24, WHITE);
     }
+  }
 
-    dispCanvas.setCursor(0,62);
-    dispCanvas.setTextSize(1);
+  dispCanvas.setCursor(0,62);
+  dispCanvas.setTextSize(1);
+  if(insLevel != "") {
     dispCanvas.print("Res: ");
     dispCanvas.print(insLevel);
   }
 
   display.drawBitmap(0,0,dispCanvas.getBuffer(), SCREEN_WIDTH, SCREEN_HEIGHT, WHITE, BLACK);
   display.display();
+}
+
+// Returns the elapsed time since data updated based on the supplied epoch time
+String getElapsedTime(long long epochTime){
+  //setTime(epochTime);
+  long long epochSec = epochTime / 1000;
+  unsigned long longNow = getEpochTime();
+
+  int seconds = longNow - epochSec;
+  int minutes = seconds / 60;
+
+  String retval = "As of Now";
+  if(minutes > 0){
+    retval = "As of " + String(minutes) + "m ago";
+  }
+  return retval;
+}
+
+// Returns the current epoch time
+unsigned long getEpochTime() {
+  timeClient.update();
+  unsigned long now = timeClient.getEpochTime();
+  return now;
 }
 
 // Parses the JSON data for current readings
@@ -522,16 +553,16 @@ void parseReadings(DynamicJsonDocument doc){
   JsonObject bgnow = doc["bgnow"];
   int bgnow_mean = bgnow["mean"]; // 87
   int bgnow_last = bgnow["last"]; // 87
-  double bgnow_mills = bgnow["mills"]; // 1669594578838.8948
+  long long bgnow_mills = bgnow["mills"]; // 1669594578838.8948
 
   JsonObject bgnow_sgvs_0 = bgnow["sgvs"][0];
   const char* bgnow_sgvs_0_id = bgnow_sgvs_0["_id"]; // "6383fddfc32fe61a70eca7b8"
   int bgnow_sgvs_0_mgdl = bgnow_sgvs_0["mgdl"]; // 87
-  double bgnow_sgvs_0_mills = bgnow_sgvs_0["mills"]; // 1669594578838.8948
+  long long bgnow_sgvs_0_mills = bgnow_sgvs_0["mills"]; // 1669594578838.8948
   const char* bgnow_sgvs_0_device = bgnow_sgvs_0["device"]; // "CGMBLEKit Dexcom G6 21.0"
   const char* bgnow_sgvs_0_direction = bgnow_sgvs_0["direction"]; // "Flat"
   const char* bgnow_sgvs_0_type = bgnow_sgvs_0["type"]; // "sgv"
-  int bgnow_sgvs_0_scaled = bgnow_sgvs_0["scaled"]; // 87
+  double bgnow_sgvs_0_scaled = bgnow_sgvs_0["scaled"]; // 87
 
   JsonObject pump_data = doc["pump"]["data"];
   int pump_data_level = pump_data["level"]; // -3
@@ -564,13 +595,18 @@ void parseReadings(DynamicJsonDocument doc){
   // Capture the values used in the display update.
   batteryLevel = pump_uploader_display;
   lastUpdate = pump_data_clock_display;
-  bgLevel = bgnow_sgvs_0_mgdl;
+  if(bgnow_sgvs_0_mgdl == bgnow_sgvs_0_scaled){
+    bgLevel = String(bgnow_sgvs_0_mgdl);
+  } else {
+    bgLevel = String(bgnow_sgvs_0_scaled, 1);
+  }
   insLevel = pump_data_reservoir_display;
   arrowDir = bgnow_sgvs_0_direction;
 
-  // Set the unknownState based on whether or not we're getting the battery level value
-  // If LOOP stops sending to Nightscout this will be blank (e.g. sensor change period)
-  unknownState = batteryLevel == "";
+  if(lastUpdate == ""){
+    lastUpdate = getElapsedTime(bgnow_mills);
+  }
+
 }
 
 // Used to draw the arrows indicating the BG trend
