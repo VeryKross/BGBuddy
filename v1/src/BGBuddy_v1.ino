@@ -37,7 +37,7 @@
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
 #define OLED_RESET -1     // Reset pin # (or -1 if sharing Arduino reset pin)
 
-#define BG_VER 1.1        // Current version of BG Buddy, displayed at startup
+#define BG_VER 1.2        // Current version of BG Buddy, displayed at startup
 
 IPAddress local_IP(10,10,10,10);
 IPAddress gateway(10,10,10,1);
@@ -84,7 +84,7 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
 // This are the specific API value being retrieved; changing this will require
 // changes to the parseReadings() method so best not to change it.
-char apiName[] = "/api/v2/properties/bgnow,pump.data,pump.uploader";
+char apiName[] = "/api/v2/properties/bgnow,delta.display,pump.data,pump.uploader";
 String serverName = "";
 String apiToken = "";
 
@@ -94,6 +94,7 @@ String lastUpdate="";   // How long since last Nightscout update
 String bgLevel="";      // Current Blood Glucose level
 String insLevel="";     // Insuline level reported by pump
 String arrowDir="";     // Arrow trend direction
+String levelDelta="";        // Delta change amount
 
 void setup() {
   Serial.begin(115200);
@@ -271,7 +272,6 @@ void checkNSapi(){
       if(nsConnectCount >= nsRetryMax) {
         nsConnectCount = 0;      
         nsConnectFailed = true;
-
         display.clearDisplay();
         display.setCursor(0,0);
         display.setTextSize(1);
@@ -290,14 +290,15 @@ void checkNSapi(){
     }
   
     // Call the Nightscout API
-    client.print(String("GET ") + apiName + apiToken + " HTTP/1.1\r\n" +
+    String apiStr = String("GET ") + apiName + apiToken + " HTTP/1.1\r\n" +
               "Host: " + serverName + "\r\n" +
-              "User-Agent: BuildFailureDetectorESP8266\r\n" +
-              "Connection: close\r\n\r\n");
+              "Connection: close\r\n\r\n";
+    client.print(apiStr);
 
     // Read (and toss) the response header
+    String line = "";
     while (client.connected()) {
-      String line = client.readStringUntil('\n');
+      line = client.readStringUntil('\n');
       if (line == "\r") {
         break;
       }
@@ -305,13 +306,18 @@ void checkNSapi(){
 
     // Read the JSON response data
     String rawJSON = client.readStringUntil('\n');
-
     DynamicJsonDocument doc(1536);
     DeserializationError error = deserializeJson(doc, rawJSON);
 
     if (error) {
       Serial.print(F("Failed to deserialize JSON data: "));
       Serial.println(error.f_str());
+
+      Serial.println("------------------------------");
+      Serial.print("API Str: ");
+      Serial.println(apiStr);
+      Serial.print("Raw JSON: ");
+      Serial.println(rawJSON);
       return;
     } else {
       parseReadings(doc);
@@ -449,39 +455,39 @@ void displayInfo(){
   // Determine the trend arrow angle and offset
   int arrowOffset = 0;
   int arrowAngle = 0;
+  bool hasDirection = false;
   bool doubleArrow = false;
-
-  char* directarr = "";
-  doubleArrow=false;
+  
+  String directarr = "";
 
   if (String(arrowDir) == "Flat") {
-    directarr = "→";
+    hasDirection = true;
     arrowAngle = 90;
     arrowOffset = -10;
   }  else if (String(arrowDir) == "FortyFiveUp") {
-    directarr = "↗";
+    hasDirection = true;
     arrowAngle = 45;
     arrowOffset = -5;
   }  else if (String(arrowDir) == "FortyFiveDown") {
-    directarr = "↘";
+    hasDirection = true;
     arrowAngle = 135;
     arrowOffset = -20;
   } else if (String(arrowDir) == "DoubleUp") {
-    directarr = "↑↑";
+    hasDirection = true;
     arrowAngle = 0;
     arrowOffset = 0;
     doubleArrow = true;
   } else if (String(arrowDir) == "DoubleDown") {
-    directarr = "↓↓";
+    hasDirection = true;
     arrowAngle = 179;
     arrowOffset = -22;
     doubleArrow = true;
   }  else if (String(arrowDir) == "SingleUp") {
-    directarr = "↑";
+    hasDirection = true;
     arrowAngle = 0;
     arrowOffset = 0;
   }  else if (String(arrowDir) == "SingleDown") {
-    directarr = "↓";
+    hasDirection = true;
     arrowAngle = 179;
     arrowOffset = -22;
   }
@@ -505,7 +511,7 @@ void displayInfo(){
   dispCanvas.setTextColor(WHITE);
   dispCanvas.print(bgLevel);
 
-  if (directarr != "") {
+  if (hasDirection) {
     drawArrow(78, 42+arrowOffset, 10, arrowAngle, 24, 24, WHITE);
     if(doubleArrow){
       drawArrow(105, 42+arrowOffset, 10, arrowAngle, 24, 24, WHITE);
@@ -517,6 +523,9 @@ void displayInfo(){
   if(insLevel != "") {
     dispCanvas.print("Res: ");
     dispCanvas.print(insLevel);
+  } else {
+    dispCanvas.print("Delta: ");
+    dispCanvas.print(levelDelta);
   }
 
   display.drawBitmap(0,0,dispCanvas.getBuffer(), SCREEN_WIDTH, SCREEN_HEIGHT, WHITE, BLACK);
@@ -550,31 +559,37 @@ unsigned long getEpochTime() {
 // Parsing code adapted from ArduinoJson Assistant generated code
 // https://arduinojson.org/v6/assistant
 void parseReadings(DynamicJsonDocument doc){
+
   JsonObject bgnow = doc["bgnow"];
-  int bgnow_mean = bgnow["mean"]; // 87
-  int bgnow_last = bgnow["last"]; // 87
-  long long bgnow_mills = bgnow["mills"]; // 1669594578838.8948
+  int bgnow_mean = bgnow["mean"]; // 79
+  int bgnow_last = bgnow["last"]; // 79
+  long long bgnow_mills = bgnow["mills"]; // 1678928653920.828
 
   JsonObject bgnow_sgvs_0 = bgnow["sgvs"][0];
-  const char* bgnow_sgvs_0_id = bgnow_sgvs_0["_id"]; // "6383fddfc32fe61a70eca7b8"
-  int bgnow_sgvs_0_mgdl = bgnow_sgvs_0["mgdl"]; // 87
-  long long bgnow_sgvs_0_mills = bgnow_sgvs_0["mills"]; // 1669594578838.8948
+  const char* bgnow_sgvs_0_id = bgnow_sgvs_0["_id"]; // "64126b175fde9abde091352c"
+  int bgnow_sgvs_0_mgdl = bgnow_sgvs_0["mgdl"]; // 79
+  long long bgnow_sgvs_0_mills = bgnow_sgvs_0["mills"]; // 1678928653920.828
   const char* bgnow_sgvs_0_device = bgnow_sgvs_0["device"]; // "CGMBLEKit Dexcom G6 21.0"
   const char* bgnow_sgvs_0_direction = bgnow_sgvs_0["direction"]; // "Flat"
   const char* bgnow_sgvs_0_type = bgnow_sgvs_0["type"]; // "sgv"
-  double bgnow_sgvs_0_scaled = bgnow_sgvs_0["scaled"]; // 87
+  double bgnow_sgvs_0_scaled = bgnow_sgvs_0["scaled"]; // 79
+
+  const char* delta_display = doc["delta"]["display"]; // "+0"
 
   JsonObject pump_data = doc["pump"]["data"];
   int pump_data_level = pump_data["level"]; // -3
 
   JsonObject pump_data_clock = pump_data["clock"];
-  const char* pump_data_clock_value = pump_data_clock["value"]; // "2022-11-28T00:16:33.000Z"
+  const char* pump_data_clock_value = pump_data_clock["value"]; // "2023-03-16T00:59:23.000Z"
   const char* pump_data_clock_label = pump_data_clock["label"]; // "Last Clock"
-  const char* pump_data_clock_display = pump_data_clock["display"]; // "2m ago"
+  const char* pump_data_clock_display = pump_data_clock["display"]; // "6m ago"
   int pump_data_clock_level = pump_data_clock["level"]; // -3
 
-  const char* pump_data_reservoir_label = pump_data["reservoir"]["label"]; // "Reservoir"
-  const char* pump_data_reservoir_display = pump_data["reservoir"]["display"]; // "50+ U"
+  JsonObject pump_data_reservoir = pump_data["reservoir"];
+  float pump_data_reservoir_value = pump_data_reservoir["value"]; // 42.75
+  const char* pump_data_reservoir_label = pump_data_reservoir["label"]; // "Reservoir"
+  const char* pump_data_reservoir_display = pump_data_reservoir["display"]; // "42.8U"
+  int pump_data_reservoir_level = pump_data_reservoir["level"]; // -3
 
   const char* pump_data_manufacturer = pump_data["manufacturer"]; // "Insulet"
   const char* pump_data_model = pump_data["model"]; // "Eros"
@@ -585,14 +600,16 @@ void parseReadings(DynamicJsonDocument doc){
   const char* pump_data_title = pump_data["title"]; // "Pump Status"
 
   JsonObject pump_uploader = doc["pump"]["uploader"];
-  const char* pump_uploader_timestamp = pump_uploader["timestamp"]; // "2022-11-28T00:16:33Z"
-  int pump_uploader_battery = pump_uploader["battery"]; // 73
+  int pump_uploader_battery = pump_uploader["battery"]; // 100
+  const char* pump_uploader_timestamp = pump_uploader["timestamp"]; // "2023-03-16T00:59:23Z"
   const char* pump_uploader_name = pump_uploader["name"]; // "iPhone"
-  int pump_uploader_value = pump_uploader["value"]; // 73
-  const char* pump_uploader_display = pump_uploader["display"]; // "73%"
-  int pump_uploader_level = pump_uploader["level"]; // 75
+  int pump_uploader_value = pump_uploader["value"]; // 100
+  const char* pump_uploader_display = pump_uploader["display"]; // "100%"
+  int pump_uploader_level = pump_uploader["level"]; // 100
+
 
   // Capture the values used in the display update.
+  levelDelta = delta_display;
   batteryLevel = pump_uploader_display;
   lastUpdate = pump_data_clock_display;
   if(bgnow_sgvs_0_mgdl == bgnow_sgvs_0_scaled){
@@ -600,13 +617,13 @@ void parseReadings(DynamicJsonDocument doc){
   } else {
     bgLevel = String(bgnow_sgvs_0_scaled, 1);
   }
+
   insLevel = pump_data_reservoir_display;
   arrowDir = bgnow_sgvs_0_direction;
 
   if(lastUpdate == ""){
     lastUpdate = getElapsedTime(bgnow_mills);
   }
-
 }
 
 // Used to draw the arrows indicating the BG trend
