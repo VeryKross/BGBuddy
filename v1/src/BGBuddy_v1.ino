@@ -37,7 +37,7 @@
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
 #define OLED_RESET -1     // Reset pin # (or -1 if sharing Arduino reset pin)
 
-#define BG_VER 1.2        // Current version of BG Buddy, displayed at startup
+#define BG_VER 1.3        // Current version of BG Buddy, displayed at startup
 
 IPAddress local_IP(10,10,10,10);
 IPAddress gateway(10,10,10,1);
@@ -59,6 +59,7 @@ bool nsConnectFailed = false;
 bool nsFirstUpdate = true;
 bool wifiInitialized = false;
 bool connectionValidated = false;
+bool apMode = false;
 
 unsigned long curMiliCount = 0;
 unsigned long prevMiliCount = 0;
@@ -97,6 +98,16 @@ String arrowDir="";     // Arrow trend direction
 String levelDelta="";        // Delta change amount
 
 void setup() {
+  // Uncomment the following 3 lines for IdeaSpark ESP8266 w/OLED boards (aka IdeaSpark-SDA12)
+  // int sda = 12;
+  // int scl = 14;
+  // Wire.begin(sda, scl);
+
+  // Uncomment the following 3 lines for IdeaSpark Alt1 ESP8266 w/OLED boards (aka IdeaSpark-SDA14)
+  // int sda = 14;
+  // int scl = 12;
+  // Wire.begin(sda, scl);
+
   Serial.begin(115200);
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
 
@@ -138,22 +149,28 @@ void setup() {
   Serial.println(BG_VER);
   Serial.println("---------------------");
 
-  Serial.println("Connecting to WiFi...");
+  Serial.printf("Connecting to WiFi... %s \n", user_settings.ssid);
+  WiFi.disconnect(true);
+  delay(1000);
   WiFi.mode(WIFI_STA);
   WiFi.hostname("BGBuddy");
   WiFi.begin(user_settings.ssid, user_settings.password);
 
-  byte tries = 0;
+  int tries = 0;
+  apMode = false;
   while (WiFi.status() != WL_CONNECTED) {
     delay(1000);
-    if (tries++ > 15) {
-      Serial.print("Switching to Access Point mode ... ");
+    Serial.printf("%i (%i)...", tries, WiFi.status());
+    if (tries++ > 20) {
+      Serial.println("Switching to Access Point mode ... ");
+      WiFi.disconnect(true);
+      delay(1000);
       Serial.println(WiFi.softAPConfig(local_IP, gateway, subnet) ? "Ready" : "Failed!");
       WiFi.mode(WIFI_AP);
       WiFi.softAP("BG Buddy Portal", "12345678");
       Serial.println("Starting Access Point at 10.10.10.10 ...");
-
       stationConnectedHandler = WiFi.onSoftAPModeStationConnected(&onStationConnected);
+      apMode = true;
       break;
     }
   }
@@ -190,7 +207,9 @@ void setup() {
     display.display();
 
     // Setup mDNS so we can serve our web page at http://bgbuddy.local/
-    // which is easier to remember than our IP address
+    // which is easier to remember than our IP address. Note that this
+    // will only work if you have one BG Buddy on your network, otherwise
+    // you'll still need to use the IP address to access each one.
     MDNS.begin("BGBuddy");
   }
 
@@ -225,7 +244,9 @@ void loop()
   curMiliCount = millis();
   if(nsFirstUpdate || curMiliCount - prevMiliCount >= nsApiInterval){
     prevMiliCount = curMiliCount;
-    checkNSapi();
+    if(apMode == false){
+      checkNSapi();
+    }
   }
 }
 
@@ -289,25 +310,25 @@ void checkNSapi(){
       return;
     }
   
-    // Call the Nightscout API
-    String apiStr = String("GET ") + apiName + apiToken + " HTTP/1.1\r\n" +
-              "Host: " + serverName + "\r\n" +
-              "Connection: close\r\n\r\n";
-    client.print(apiStr);
+    String rawJSON = "";
+    HTTPClient http;
+    String apiStr = "https://" + serverName + apiName + apiToken;
+    
+    http.begin(client, apiStr);
+    int respCode = http.GET();
 
-    // Read (and toss) the response header
-    String line = "";
-    while (client.connected()) {
-      line = client.readStringUntil('\n');
-      if (line == "\r") {
-        break;
-      }
+    if (respCode > 0) {
+      rawJSON = http.getString();
+    } else {
+      Serial.print("Error on HTTP request: ");
+      Serial.println(respCode);
     }
 
     // Read the JSON response data
-    String rawJSON = client.readStringUntil('\n');
-    DynamicJsonDocument doc(1536);
+    JsonDocument doc;
     DeserializationError error = deserializeJson(doc, rawJSON);
+
+    http.end();
 
     if (error) {
       Serial.print(F("Failed to deserialize JSON data: "));
@@ -393,6 +414,12 @@ void handlePortal() {
     
     user_settings.ssid[server.arg("ssid").length()] = user_settings.password[server.arg("password").length()] = '\0';
     user_settings.nsurl[server.arg("nsurl").length()] = user_settings.nstoken[server.arg("nstoken").length()] = '\0';
+
+    Serial.println("Updating user settings:");
+    Serial.printf(" SSID: %s \n", user_settings.ssid);
+    Serial.printf("  PWD: %s \n", user_settings.password);
+    Serial.printf("  URL: %s \n", user_settings.nsurl);
+    Serial.printf("Token: %s \n", user_settings.nstoken);
 
     EEPROM.put(0, user_settings);
     EEPROM.commit();
@@ -543,7 +570,13 @@ String getElapsedTime(long long epochTime){
 
   String retval = "As of Now";
   if(minutes > 0){
-    retval = "As of " + String(minutes) + "m ago";
+    if(minutes > 60) {
+      int hours = minutes / 60;
+      int min = minutes % 60;
+      retval = "As of " + String(hours) + "h " + String(min) + "m";
+    } else{
+      retval = "As of " + String(minutes) + "m ago";
+    }
   }
   return retval;
 }
@@ -558,7 +591,7 @@ unsigned long getEpochTime() {
 // Parses the JSON data for current readings
 // Parsing code adapted from ArduinoJson Assistant generated code
 // https://arduinojson.org/v6/assistant
-void parseReadings(DynamicJsonDocument doc){
+void parseReadings(JsonDocument doc){
 
   JsonObject bgnow = doc["bgnow"];
   int bgnow_mean = bgnow["mean"]; // 79
